@@ -1,0 +1,87 @@
+import syft as sy
+from Bio import SeqIO
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+
+# Paths to FASTA files
+rna_path = "rna.fna"
+protein_path = "protein.faa"
+
+# Load sequences
+def load_sequences(fasta_path, file_format="fasta"):
+    return [str(record.seq) for record in SeqIO.parse(fasta_path, file_format)]
+
+rna_sequences = load_sequences(rna_path)
+protein_sequences = load_sequences(protein_path)
+
+# One-hot encoding for RNA/Protein
+def encode_sequence(seq, length=100, kind="rna"):
+    alphabet = "ACGTU" if kind == "rna" else "ACDEFGHIKLMNPQRSTVWY"
+    mapping = {char: i for i, char in enumerate(alphabet)}
+    encoded = np.zeros((length, len(mapping)))
+    for i, char in enumerate(seq[:length]):
+        if char in mapping:
+            encoded[i, mapping[char]] = 1
+    return encoded.flatten()
+
+# Custom Dataset
+class SequenceDataset(Dataset):
+    def __init__(self, sequences, kind="rna"):
+        self.data = [torch.tensor(encode_sequence(seq, kind=kind), dtype=torch.float32) for seq in sequences]
+        self.labels = torch.tensor([0 if i % 2 == 0 else 1 for i in range(len(sequences))], dtype=torch.long)
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx], self.labels[idx]
+
+# Dummy neural network
+class SimpleNet(nn.Module):
+    def __init__(self, input_dim):
+        super(SimpleNet, self).__init__()
+        self.fc1 = nn.Linear(input_dim, 64)
+        self.fc2 = nn.Linear(64, 2)
+
+    def forward(self, x):
+        x = torch.relu(self.fc1(x))
+        return self.fc2(x)
+
+# Create datasets and dataloaders
+rna_dataset = SequenceDataset(rna_sequences[:100], kind="rna")
+protein_dataset = SequenceDataset(protein_sequences[:100], kind="protein")
+
+rna_loader = DataLoader(rna_dataset, batch_size=10)
+protein_loader = DataLoader(protein_dataset, batch_size=10)
+
+# Initialize model
+input_dim = len(rna_dataset[0][0])
+model = SimpleNet(input_dim)
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# Training function
+def train(model, loader):
+    model.train()
+    total_loss = 0
+    for data, target in loader:
+        optimizer.zero_grad()
+        output = model(data)
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.step()
+        total_loss += loss.item()
+    return total_loss / len(loader)
+
+# Simulate Federated Learning: RNA and Protein as two clients
+for round in range(3):
+    rna_loss = train(model, rna_loader)
+    protein_loss = train(model, protein_loader)
+    avg_loss = (rna_loss + protein_loss) / 2
+    print(f"Federated Round {round+1}, Avg Loss: {avg_loss:.4f}")
+
+# Save final model
+torch.save(model.state_dict(), "federated_model.pth")
+print("Model saved to 'federated_model.pth'")
